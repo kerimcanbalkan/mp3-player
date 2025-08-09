@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/kerimcanbalkan/mp3-player/internal/audio"
 )
 
@@ -15,7 +17,31 @@ type model struct {
 	files    []string
 	cursor   int
 	selected string
+	ready    bool
+	viewport viewport.Model
 }
+
+var (
+	titleStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Right = "├"
+		return lipgloss.NewStyle().BorderStyle(b).Padding(0, 1)
+	}()
+
+	songStyle = func() lipgloss.Style {
+		return lipgloss.NewStyle().Width(200).Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "0", Dark: "15"}).Padding(0, 1)
+	}()
+
+	choosenSongStyle = func() lipgloss.Style {
+		return lipgloss.NewStyle().Width(200).Bold(true).Background(lipgloss.AdaptiveColor{Light: "14", Dark: "9"}).Foreground(lipgloss.AdaptiveColor{Light: "0", Dark: "15"}).Padding(0, 1)
+	}()
+
+	infoStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Left = "┤"
+		return titleStyle.BorderStyle(b)
+	}()
+)
 
 func InitialModel() model {
 	// Get the current working directory
@@ -56,10 +82,54 @@ func (m model) Init() tea.Cmd {
 	return nil
 }
 
+func (m model) renderSongList() string {
+	var content string
+	for i, file := range m.files {
+		musicFile := filepath.Base(file)
+		ext := filepath.Ext(musicFile)
+		song := strings.TrimSuffix(musicFile, ext)
+
+		if m.cursor == i {
+			song = choosenSongStyle.Render(song)
+		} else {
+			song = songStyle.Render(song)
+		}
+
+		content += fmt.Sprintf("%s\n", song)
+	}
+	return content
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
-	// Is it a key press?
+	case tea.WindowSizeMsg:
+		headerHeight := lipgloss.Height(m.headerView())
+		footerHeight := lipgloss.Height(m.footerView())
+		verticalMarginHeight := headerHeight + footerHeight
+
+		if !m.ready {
+			// Since this program is using the full size of the viewport we
+			// need to wait until we've received the window dimensions before
+			// we can initialize the viewport. The initial dimensions come in
+			// quickly, though asynchronously, which is why we wait for them
+			// here.
+			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
+			m.viewport.YPosition = headerHeight
+			m.viewport.SetContent(m.renderSongList())
+
+			m.ready = true
+
+			// This is only necessary for high performance rendering, which in
+			// most cases you won't need.
+			//
+			// Render the viewport one line below the header.
+			m.viewport.YPosition = headerHeight + 1
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height - verticalMarginHeight
+		}
+
 	case tea.KeyMsg:
 
 		// Cool, what was the actual key pressed?
@@ -74,6 +144,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor > 0 {
 				m.cursor--
 				m.selected = m.files[m.cursor]
+				m.viewport.SetContent(m.renderSongList())
 			}
 
 		// The "down" and "j" keys move the cursor down
@@ -81,6 +152,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.files)-1 {
 				m.cursor++
 				m.selected = m.files[m.cursor]
+				m.viewport.SetContent(m.renderSongList())
 			}
 
 		// The "enter" key and the spacebar (a literal space) toggle
@@ -96,29 +168,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	// The header
-	s := "Select Music to Play\n\n"
-
-	// Iterate over our choices
-	for i, file := range m.files {
-
-		musicFile := filepath.Base(file) // "song.mp3"
-		ext := filepath.Ext(musicFile)
-		song := strings.TrimSuffix(musicFile, ext)
-
-		// Is the cursor pointing at this choice?
-		cursor := " " // no cursor
-		if m.cursor == i {
-			cursor = ">" // cursor!
-		}
-
-		// Render the row
-		s += fmt.Sprintf("%s %s\n", cursor, song)
+	if !m.ready {
+		return "\n  Initializing..."
 	}
+	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
+}
 
-	// The footer
-	s += "\nPress q to quit.\n"
+func (m model) headerView() string {
+	title := titleStyle.Render("Select Song To Play!")
+	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(title)))
+	return lipgloss.JoinHorizontal(lipgloss.Center, title, line)
+}
 
-	// Send the UI for rendering
-	return s
+func (m model) footerView() string {
+	info := infoStyle.Render(fmt.Sprint("Press q to exit"))
+	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(info)))
+	return lipgloss.JoinHorizontal(lipgloss.Center, line, info)
 }
